@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Traffic Reco — Route Recommendation</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div class="logo">
+      <div class="logo-dot"></div>
+      <h1>Traffic<span>RECOMMENDATION SYSTEM!</span></h1>
+    </div>
+    <div class="live-badge">● LIVE</div>
+  </header>
+
+  <div class="main-grid">
+    <!-- Video feed -->
+    <div>
+      <div class="video-pane">
+        <div class="video-label">CAMERA FEED — YOLO11 DETECTION</div>
+        <img id="video-feed" src="/video_feed" alt="Live feed">
+      </div>
+      <div class="progress-bar-wrap">
+        <div class="progress-track"><div class="progress-fill" id="progress"></div></div>
+        <div class="progress-meta">
+          <span id="frame-counter">Frame 0</span>
+          <span id="fps-counter">— fps</span>
+        </div>
+      </div>
+
+      <!-- History sparkline -->
+      <div class="history-card" style="margin-top:16px;">
+        <div class="history-title">VEHICLE COUNT — LAST 60s</div>
+        <svg id="sparkline" viewBox="0 0 320 60" preserveAspectRatio="none">
+          <polyline id="spark-line" fill="none" stroke="#00e5a0" stroke-width="2"
+                    stroke-linejoin="round" points=""/>
+          <line id="jam-line" x1="0" y1="0" x2="320" y2="0"
+                stroke="#ff4455" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Right panel -->
+    <div class="right-panel">
+
+      <!-- Recommendation -->
+      <div class="rec-card LOW" id="rec-card">
+        <div class="rec-label">ROUTE STATUS</div>
+        <div class="rec-density density-LOW" id="rec-density">LOW</div>
+        <div class="rec-text" id="rec-text">Waiting for data…</div>
+      </div>
+
+      <!-- Stats -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">VEHICLES NOW</div>
+          <div class="stat-value" id="stat-count">0 <span>detected</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">PROCESS FPS</div>
+          <div class="stat-value" id="stat-fps">— <span>fps</span></div>
+        </div>
+      </div>
+
+      <!-- Class breakdown -->
+      <div class="class-card">
+        <div class="class-title">CLASS BREAKDOWN</div>
+        <div id="class-rows">
+          <div style="font-size:0.75rem;color:var(--muted);">Waiting…</div>
+        </div>
+      </div>
+
+      <!-- Thresholds -->
+      <div class="config-card">
+        <div class="config-title">THRESHOLDS</div>
+        <div class="config-row">
+          <label>⚠️ Heavy traffic at</label>
+          <input type="number" id="heavy-thresh" value="18" min="1">
+        </div>
+        <div class="config-row">
+          <label>🚨 Jam at</label>
+          <input type="number" id="jam-thresh" value="25" min="1">
+        </div>
+        <button class="apply-btn" onclick="applyThresholds()">APPLY</button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  const history = [];
+  const MAX_HIST = 60;
+
+  async function fetchStatus() {
+    try {
+      const r = await fetch('/api/status');
+      const d = await r.json();
+
+      // Rec card
+      const card = document.getElementById('rec-card');
+      card.className = `rec-card ${d.density}`;
+      document.getElementById('rec-density').className = `rec-density density-${d.density}`;
+      document.getElementById('rec-density').textContent = d.density;
+      document.getElementById('rec-text').textContent = d.recommendation;
+
+      // Stats
+      document.getElementById('stat-count').innerHTML = `${d.vehicle_count} <span>detected</span>`;
+      document.getElementById('stat-fps').innerHTML = `${d.fps} <span>fps</span>`;
+
+      // Progress
+      if (d.total_frames > 0) {
+        const pct = (d.frame_number / d.total_frames * 100).toFixed(1);
+        document.getElementById('progress').style.width = pct + '%';
+        document.getElementById('frame-counter').textContent = `Frame ${d.frame_number} / ${d.total_frames}`;
+      }
+      document.getElementById('fps-counter').textContent = `${d.fps} fps`;
+
+      // Class rows
+      const classDiv = document.getElementById('class-rows');
+      const counts = d.class_counts;
+      const keys = Object.keys(counts);
+      if (keys.length === 0) {
+        classDiv.innerHTML = '<div style="font-size:0.75rem;color:var(--muted);">No vehicles detected</div>';
+      } else {
+        const maxVal = Math.max(...Object.values(counts), 1);
+        classDiv.innerHTML = keys.map(k => `
+          <div class="class-row">
+            <div class="class-name">${k}</div>
+            <div class="class-bar-wrap">
+              <div class="class-bar" style="width:${(counts[k]/maxVal*100).toFixed(0)}%"></div>
+            </div>
+            <div class="class-count">${counts[k]}</div>
+          </div>
+        `).join('');
+      }
+
+      // Sparkline
+      history.push(d.vehicle_count);
+      if (history.length > MAX_HIST) history.shift();
+      drawSparkline(d);
+
+    } catch (e) { console.error(e); }
+  }
+
+  function drawSparkline(d) {
+    const jamThresh = parseInt(document.getElementById('jam-thresh').value) || 10;
+    const maxVal = Math.max(...history, jamThresh, 1);
+    const W = 320, H = 60;
+    const pts = history.map((v, i) => {
+      const x = (i / (MAX_HIST - 1)) * W;
+      const y = H - (v / maxVal) * (H - 4) - 2;
+      return `${x},${y}`;
+    }).join(' ');
+
+    document.getElementById('spark-line').setAttribute('points', pts);
+    const jamY = H - (jamThresh / maxVal) * (H - 4) - 2;
+    const jamLine = document.getElementById('jam-line');
+    jamLine.setAttribute('y1', jamY); jamLine.setAttribute('y2', jamY);
+  }
+
+  async function applyThresholds() {
+    const jam = parseInt(document.getElementById('jam-thresh').value);
+    const heavy = parseInt(document.getElementById('heavy-thresh').value);
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({jam_threshold: jam, heavy_threshold: heavy})
+    });
+  }
+
+  setInterval(fetchStatus, 800);
+  fetchStatus();
+</script>
+</body>
+</html>
